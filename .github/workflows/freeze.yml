@@ -25,7 +25,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           OUTPUT_DIR: frozen_evidence
-        run: python .github/scripts/freeze_scoped.py
+        run: python .github/scripts/freeze_final.py
       - name: Archive result
         run: |
           python - <<'PY'
