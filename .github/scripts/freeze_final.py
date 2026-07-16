@@ -13,6 +13,49 @@ namespace: dict[str, Any] = {"__file__": str(scope_path), "__name__": "freeze_sc
 exec(compile(source, str(scope_path), "exec"), namespace)
 module = namespace["module"]
 base_complete = namespace["_original_complete"]
+tag_score = namespace["_tag_score"]
+ref_tag = namespace["_ref_tag"]
+deref_tag = namespace["_deref_tag"]
+
+
+def resolve_tag(urls: list[str], repos: list[tuple[str, str]], version: str, package: str):
+    attempts: list[str] = []
+    repair_repos = list(dict.fromkeys(repos))[:4]
+    if not repair_repos:
+        return None, attempts
+    direct = []
+    for url in urls:
+        parsed = ref_tag(url)
+        if parsed and (parsed[0], parsed[1]) in repair_repos:
+            score = tag_score(parsed[2], version, package)
+            if score < 99:
+                direct.append((score, *parsed))
+    for _, owner, repo, tag in sorted(direct):
+        row = module.receipt("github-tag-ref", module.api(owner, repo, f"git/ref/tags/{urllib.parse.quote(tag, safe='')}"), auth=True)
+        attempts.append(row["receipt_id"])
+        result = deref_tag(owner, repo, tag, row, attempts)
+        if result:
+            result["source"] = "direct-advisory-reference"
+            return result, attempts
+    for owner, repo in repair_repos:
+        row = module.receipt("github-tags", module.api(owner, repo, "tags?per_page=100"), auth=True)
+        attempts.append(row["receipt_id"])
+        data = module.receipt_json(row)
+        matches = []
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                tag = item.get("name")
+                target = (item.get("commit") or {}).get("sha")
+                if isinstance(tag, str) and isinstance(target, str):
+                    score = tag_score(tag, version, package)
+                    if score < 99:
+                        matches.append((score, tag, target))
+        if matches:
+            score, tag, target = sorted(matches, key=lambda item: (item[0], item[1]))[0]
+            return {"owner": owner, "repo": repo, "tag": tag, "target_sha": target, "receipt_id": row["receipt_id"], "source": "tag-inventory", "match_score": score}, attempts
+    return None, attempts
 
 
 def supplemental_registry(ecosystem: str, package: str, version: str):
@@ -49,39 +92,18 @@ def supplemental_registry(ecosystem: str, package: str, version: str):
         exact = f"https://proxy.golang.org/{module_path}/@v/{urllib.parse.quote(requested, safe='')}.info"
         row = module.receipt("package-registry-publication", exact)
         attempts.append(row)
-        if row["resolved"]:
-            return True, attempts
-        listing = f"https://proxy.golang.org/{module_path}/@v/list"
-        row = module.receipt("package-registry-index", listing, accept="text/plain")
-        attempts.append(row)
-        body = (module.ROOT / row["body_path"]).read_bytes() if row.get("body_path") else b""
-        return bool(row["resolved"] and requested in {line.strip() for line in body.decode("utf-8", "replace").splitlines()}), attempts
+        return row["resolved"], attempts
     if ecosystem == "RubyGems":
         exact = f"https://rubygems.org/api/v2/rubygems/{urllib.parse.quote(package, safe='')}/versions/{urllib.parse.quote(version, safe='')}.json"
         row = module.receipt("package-registry-publication", exact)
         attempts.append(row)
-        if row["resolved"]:
-            return True, attempts
-        listing = f"https://rubygems.org/api/v1/versions/{urllib.parse.quote(package, safe='')}.json"
-        row = module.receipt("package-registry-index", listing)
-        attempts.append(row)
-        data = module.receipt_json(row)
-        numbers = {str(item.get("number")).lower() for item in data if isinstance(item, dict)} if isinstance(data, list) else set()
-        normalized = value.replace("-", ".")
-        return bool(row["resolved"] and any(item == value or item.replace("-", ".") == normalized for item in numbers)), attempts
+        return row["resolved"], attempts
     if ecosystem == "NuGet":
         package_lower = package.lower()
         exact = f"https://api.nuget.org/v3-flatcontainer/{urllib.parse.quote(package_lower, safe='')}/{urllib.parse.quote(value, safe='')}/{urllib.parse.quote(package_lower, safe='')}.nuspec"
         row = module.receipt("package-registry-publication", exact, accept="application/xml")
         attempts.append(row)
-        if row["resolved"]:
-            return True, attempts
-        listing = f"https://api.nuget.org/v3-flatcontainer/{urllib.parse.quote(package_lower, safe='')}/index.json"
-        row = module.receipt("package-registry-index", listing)
-        attempts.append(row)
-        data = module.receipt_json(row)
-        versions = {str(item).lower() for item in (data.get("versions") or [])} if isinstance(data, dict) else set()
-        return bool(row["resolved"] and value in versions), attempts
+        return row["resolved"], attempts
     return False, attempts
 
 
@@ -103,6 +125,6 @@ def complete_evidence(unit: dict[str, Any]):
 
 
 module.parse_units = namespace["parse_units"]
-module.resolve_tag = namespace["resolve_tag"]
+module.resolve_tag = resolve_tag
 module.complete_evidence = complete_evidence
 module.main()
