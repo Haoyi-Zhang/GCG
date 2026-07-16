@@ -1,0 +1,51 @@
+name: Freeze repair evidence
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Freeze public evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTPUT_DIR: frozen_evidence
+        run: python .github/scripts/freeze_osv.py
+      - name: Archive result
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib, zipfile
+          root = pathlib.Path('frozen_evidence')
+          target = pathlib.Path('repair-evidence-frozen.zip')
+          fixed = (2020, 1, 1, 0, 0, 0)
+          with zipfile.ZipFile(target, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+              for path in sorted(root.rglob('*')):
+                  if path.is_file():
+                      info = zipfile.ZipInfo(path.relative_to(root).as_posix(), fixed)
+                      info.compress_type = zipfile.ZIP_DEFLATED
+                      info.external_attr = 0o100644 << 16
+                      archive.writestr(info, path.read_bytes())
+          digest = hashlib.sha256(target.read_bytes()).hexdigest()
+          pathlib.Path('repair-evidence-frozen.zip.sha256').write_text(f'{digest}  {target.name}\n')
+          print(json.dumps({'archive': target.name, 'bytes': target.stat().st_size, 'sha256': digest}, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repair-evidence-frozen
+          path: |
+            repair-evidence-frozen.zip
+            repair-evidence-frozen.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
