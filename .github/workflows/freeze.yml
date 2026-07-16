@@ -26,6 +26,19 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           OUTPUT_DIR: frozen_evidence
         run: python .github/scripts/freeze_final.py
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.2'
+      - name: Run frozen dependency-vulnerability baseline
+        run: |
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.3.8
+          python .github/scripts/generate_sbom.py
+          osv-scanner --version > frozen_evidence/osv_scanner_version.txt
+          set +e
+          osv-scanner scan source --format json --output-file frozen_evidence/osv_scanner.json frozen_evidence/candidate.cdx.json 2> frozen_evidence/osv_scanner_stderr.txt
+          code=$?
+          set -e
+          printf '%s\n' "$code" > frozen_evidence/osv_scanner_exit_code.txt
       - name: Archive result
         run: |
           python - <<'PY'
